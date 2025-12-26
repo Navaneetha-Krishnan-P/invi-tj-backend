@@ -361,113 +361,7 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// 5. Forgot Password (Send Reset Link/OTP)
-app.post('/api/auth/forgot-password', async (req, res) => {
-  try {
-    const { email } = req.body;
 
-    if (!email) {
-      return res.status(400).json({ error: 'Email is required' });
-    }
-
-    const result = await db.query(
-      'SELECT * FROM tj.users WHERE email = $1',
-      [email]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    const user = result.rows[0];
-
-    // Generate reset token
-    const resetToken = crypto.randomBytes(32).toString('hex');
-    const tokenExpiry = new Date(Date.now() + 60 * 60 * 1000); // 60 minutes
-
-    await db.query(
-      'UPDATE tj.users SET reset_token = $1, reset_token_expiry = $2 WHERE email = $3',
-      [resetToken, tokenExpiry, email]
-    );
-
-    // Create reset link
-    const resetLink = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password?token=${resetToken}`;
-
-    // Send reset email with link
-    const emailHtml = `
-      <h2>Password Reset Request</h2>
-      <p>Hi ${user.name},</p>
-      <p>You requested to reset your password. Click the link below to reset your password:</p>
-      <div style="margin: 2rem 0;">
-        <a href="${resetLink}" style="background: #00d4aa; color: white; padding: 12px 30px; text-decoration: none; border-radius: 8px; display: inline-block; font-weight: 600;">
-          Reset Password
-        </a>
-      </div>
-      <p>Or copy and paste this link in your browser:</p>
-      <p style="color: #666; word-break: break-all;">${resetLink}</p>
-      <p>This link will expire in 60 minutes.</p>
-      <p>If you didn't request this, please ignore this email.</p>
-    `;
-
-    await sendEmail(email, 'Password Reset Request', emailHtml);
-
-    res.json({
-      success: true,
-      message: 'Password reset link sent to your email'
-    });
-
-  } catch (error) {
-    console.error('Forgot password error:', error);
-    res.status(500).json({ error: 'Server error during password reset request' });
-  }
-});
-
-// 6. Reset Password (via token from email link)
-app.post('/api/auth/reset-password', async (req, res) => {
-  try {
-    const { token, newPassword } = req.body;
-
-    if (!token || !newPassword) {
-      return res.status(400).json({ error: 'Token and new password are required' });
-    }
-
-    const result = await db.query(
-      'SELECT * FROM tj.users WHERE reset_token = $1',
-      [token]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Invalid reset token' });
-    }
-
-    const user = result.rows[0];
-
-    // Check token expiry
-    if (new Date() > new Date(user.reset_token_expiry)) {
-      return res.status(400).json({ error: 'Reset link expired. Please request a new one.' });
-    }
-
-    // Hash new password
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
-
-    // Update password and clear reset token
-    await db.query(
-      `UPDATE tj.users 
-       SET password = $1, reset_token = NULL, reset_token_expiry = NULL 
-       WHERE id = $2`,
-      [hashedPassword, user.id]
-    );
-
-    res.json({
-      success: true,
-      message: 'Password reset successfully. Please login with your new password.'
-    });
-
-  } catch (error) {
-    console.error('Reset password error:', error);
-    res.status(500).json({ error: 'Server error during password reset' });
-  }
-});
 
 // Fix sequence helper endpoint (temporary - for debugging)
 app.get('/api/fix-sequence', async (req, res) => {
@@ -653,6 +547,199 @@ app.delete('/api/trades/:id', authenticateToken, async (req, res) => {
     });
   }
 });
+
+// 5. Get all users (for autocomplete/admin)
+app.get('/api/users/list', authenticateToken, async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT id, name, email, phone, role_type, is_active, created_at 
+       FROM tj.users 
+       ORDER BY name ASC`
+    );
+
+    res.json({
+      success: true,
+      users: result.rows,
+      count: result.rows.length
+    });
+
+  } catch (error) {
+    console.error('Get users error:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch users',
+      details: error.message 
+    });
+  }
+});
+
+// 6. Get all trades with user details (for admin analysis)
+app.get('/api/trades/all', authenticateToken, async (req, res) => {
+  try {
+    const { userId } = req.query;
+
+    let query = `
+      SELECT 
+        t.*,
+        u.name as user_name,
+        u.email as user_email,
+        u.phone as user_phone
+      FROM tj.trade_orders t
+      INNER JOIN tj.users u ON t.user_id = u.id
+    `;
+    const params = [];
+    if (userId) {
+      // Support multiple user IDs (comma-separated)
+      const ids = userId.split(',').map(id => id.trim()).filter(Boolean);
+      const placeholders = ids.map((_, i) => `$${i + 1}`).join(',');
+      query += ` WHERE t.user_id IN (${placeholders})`;
+      params.push(...ids);
+    }
+    query += ' ORDER BY t.trade_date DESC, t.created_at DESC';
+
+    const result = await db.query(query, params);
+
+    res.json({
+      success: true,
+      trades: result.rows,
+      count: result.rows.length
+    });
+
+  } catch (error) {
+    console.error('Get all trades error:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch trades',
+      details: error.message 
+    });
+  }
+});
+
+// ==================== USER MANAGEMENT ROUTES ====================
+
+// 7. Get specific user by ID
+app.get('/api/users/:id', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.params.id;
+
+    const result = await db.query(
+      `SELECT id, name, email, phone, role_type, is_active, is_verified, created_at, updated_at 
+       FROM tj.users 
+       WHERE id = $1`,
+      [userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({
+      success: true,
+      user: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error('Get user error:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch user',
+      details: error.message 
+    });
+  }
+});
+
+// 8. Update user profile (admin)
+app.put('/api/users/:id', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.params.id;
+    const { name, email, phone, role_type, is_active, is_verified } = req.body;
+
+    // Check if user exists
+    const checkUser = await db.query('SELECT * FROM tj.users WHERE id = $1', [userId]);
+    if (checkUser.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Check if email/phone already exists for other users
+    if (email || phone) {
+      const duplicateCheck = await db.query(
+        'SELECT * FROM tj.users WHERE (email = $1 OR phone = $2) AND id != $3',
+        [email || checkUser.rows[0].email, phone || checkUser.rows[0].phone, userId]
+      );
+      if (duplicateCheck.rows.length > 0) {
+        return res.status(400).json({ error: 'Email or phone already exists for another user' });
+      }
+    }
+
+    // Update user
+    const result = await db.query(
+      `UPDATE tj.users 
+       SET name = $1, email = $2, phone = $3, role_type = $4, is_active = $5, is_verified = $6, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $7
+       RETURNING id, name, email, phone, role_type, is_active, is_verified, created_at, updated_at`,
+      [
+        name || checkUser.rows[0].name,
+        email || checkUser.rows[0].email,
+        phone || checkUser.rows[0].phone,
+        role_type !== undefined ? role_type : checkUser.rows[0].role_type,
+        is_active !== undefined ? is_active : checkUser.rows[0].is_active,
+        is_verified !== undefined ? is_verified : checkUser.rows[0].is_verified,
+        userId
+      ]
+    );
+
+    res.json({
+      success: true,
+      message: 'User updated successfully',
+      user: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error('Update user error:', error);
+    res.status(500).json({ 
+      error: 'Failed to update user',
+      details: error.message 
+    });
+  }
+});
+
+// 9. Update user password (admin)
+app.put('/api/users/:id/password', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.params.id;
+    const { newPassword } = req.body;
+
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+
+    // Check if user exists
+    const checkUser = await db.query('SELECT * FROM tj.users WHERE id = $1', [userId]);
+    if (checkUser.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Hash new password
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    // Update password
+    await db.query(
+      'UPDATE tj.users SET password = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+      [hashedPassword, userId]
+    );
+
+    res.json({
+      success: true,
+      message: 'Password updated successfully'
+    });
+
+  } catch (error) {
+    console.error('Update password error:', error);
+    res.status(500).json({ 
+      error: 'Failed to update password',
+      details: error.message 
+    });
+  }
+});
+
+
 
 // Start server
 app.listen(port, () => {
