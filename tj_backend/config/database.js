@@ -3,11 +3,11 @@ require("dotenv").config();
 
 // PostgreSQL connection pool (Remote Server)
 const db = new Pool({
-  host: process.env.DB_HOST || "194.163.152.233",
-  port: process.env.DB_PORT || 3010,
-  user: process.env.DB_USER || "admin",
-  password: process.env.DB_PASSWORD || "Wing2025",
-  database: process.env.DB_NAME || "core_db",
+  host: process.env.DB_HOST,
+  port: process.env.DB_PORT,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
   // No SSL for direct PostgreSQL connection
   connectionTimeoutMillis: 60000,
   idleTimeoutMillis: 30000,
