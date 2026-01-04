@@ -30,11 +30,11 @@ app.use("/api/dashboard", dashboardRoutes);
 
 // PostgreSQL connection pool
 const db = new Pool({
-  host: process.env.DB_HOST || "62.84.183.182",
-  port: parseInt(process.env.DB_PORT) || 5432,
-  user: process.env.DB_USER || "admin",
-  password: process.env.DB_PASSWORD || "Wing$@2025",
-  database: process.env.DB_NAME || "core_db",
+  host: process.env.DB_HOST,
+  port: parseInt(process.env.DB_PORT),
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
   connectionTimeoutMillis: 60000,
   idleTimeoutMillis: 30000,
   max: 20,
@@ -66,9 +66,9 @@ const emailTransporter = nodemailer.createTransport({
 db.connect()
   .then((client) => {
     console.log(
-      "✅ PostgreSQL Connected to remote server (194.163.152.233:3010)"
+      `✅ PostgreSQL Connected to ${process.env.DB_HOST}:${process.env.DB_PORT}`
     );
-    console.log("📊 Database: core_db");
+    console.log(`📊 Database: ${process.env.DB_NAME}`);
     client.release();
   })
   .catch((err) => {
@@ -109,7 +109,6 @@ app.get("/api/users/check/:user_id", async (req, res) => {
     // Validate user_id format
     const userIdRegex = /^[a-zA-Z0-9._]{3,30}$/;
     if (!userIdRegex.test(user_id)) {
-      console.log(`❌ Invalid user_id format attempted: ${user_id}`);
       return res.status(400).json({
         available: false,
         error:
@@ -139,14 +138,12 @@ app.post("/api/auth/signup", async (req, res) => {
 
     // Validation
     if (!user_id || !name || !email || !phone || !password) {
-      console.log(`❌ Signup attempt with missing fields - email: ${email}`);
       return res.status(400).json({ error: "All fields are required" });
     }
 
     // Validate user_id format (alphanumeric, underscore, dot - like Instagram)
     const userIdRegex = /^[a-zA-Z0-9._]{3,30}$/;
     if (!userIdRegex.test(user_id)) {
-      console.log(`❌ Invalid user_id format in signup: ${user_id}`);
       return res.status(400).json({
         error:
           "User ID must be 3-30 characters and contain only letters, numbers, dots, or underscores",
@@ -160,7 +157,6 @@ app.post("/api/auth/signup", async (req, res) => {
     );
 
     if (existingUserId.rows.length > 0) {
-      console.log(`❌ Duplicate user_id attempt: ${user_id}`);
       return res
         .status(400)
         .json({ error: "User ID already taken. Please choose another one." });
@@ -173,9 +169,6 @@ app.post("/api/auth/signup", async (req, res) => {
     );
 
     if (existingUser.rows.length > 0) {
-      console.log(
-        `❌ Duplicate email/phone in signup - email: ${email}, phone: ${phone}`
-      );
       return res
         .status(400)
         .json({ error: "Email or phone already registered" });
@@ -246,7 +239,6 @@ app.post("/api/auth/login", async (req, res) => {
     const { email, password } = req.body;
 
     if (!email || !password) {
-      console.log(`❌ Login attempt with missing credentials`);
       return res.status(400).json({ error: "Email and password are required" });
     }
 
@@ -256,7 +248,6 @@ app.post("/api/auth/login", async (req, res) => {
     ]);
 
     if (result.rows.length === 0) {
-      console.log(`❌ Login attempt with non-existent email: ${email}`);
       return res
         .status(404)
         .json({ error: "Email not found. Please sign up first." });
@@ -266,9 +257,6 @@ app.post("/api/auth/login", async (req, res) => {
 
     // Check if account is active
     if (!user.is_active) {
-      console.log(
-        `❌ Login attempt on inactive account - user_id: ${user.user_id}, email: ${email}`
-      );
       return res.status(403).json({
         error: "Your account is inactive. Please contact the administrator.",
       });
@@ -277,9 +265,6 @@ app.post("/api/auth/login", async (req, res) => {
     // Check password
     const isValidPassword = await bcrypt.compare(password, user.password);
     if (!isValidPassword) {
-      console.log(
-        `❌ Invalid password attempt - user_id: ${user.user_id}, email: ${email}`
-      );
       return res.status(401).json({ error: "Invalid email or password" });
     }
 
@@ -354,9 +339,6 @@ app.get("/api/auth/profile", authenticateToken, async (req, res) => {
     );
 
     if (result.rows.length === 0) {
-      console.log(
-        `❌ Profile fetch failed - user not found: ${req.user.userId}`
-      );
       return res.status(404).json({ error: "User not found" });
     }
 
@@ -373,13 +355,11 @@ function authenticateToken(req, res, next) {
   const token = authHeader && authHeader.split(" ")[1];
 
   if (!token) {
-    console.log(`❌ Unauthorized access attempt - no token provided`);
     return res.status(401).json({ error: "Access token required" });
   }
 
   jwt.verify(token, JWT_SECRET, (err, user) => {
     if (err) {
-      console.log(`❌ Invalid/expired token attempt - error: ${err.message}`);
       return res.status(403).json({ error: "Invalid or expired token" });
     }
     req.user = user;
@@ -395,49 +375,334 @@ app.get("/api/health", (req, res) => {
 // 2. Save trades to database
 app.post("/api/trades/save", authenticateToken, async (req, res) => {
   try {
-    const { trades } = req.body;
+    const { trades, journals } = req.body;
+    const userId = req.user.userId;
 
-    if (!trades || !Array.isArray(trades) || trades.length === 0) {
-      console.log(`❌ No trades data provided by user: ${req.user.userId}`);
-      return res.status(400).json({ error: "No trades data provided" });
+    // Validate journals array is provided
+    if (!journals || !Array.isArray(journals) || journals.length === 0) {
+      return res.status(400).json({ error: "Trading journal entries are required" });
     }
 
-    const userId = req.user.userId;
-    const savedTrades = [];
+    // Validate all journal entries have required fields
+    for (const journal of journals) {
+      if (!journal.journal_text || !journal.journal_text.trim()) {
+        return res.status(400).json({ error: "Trading journal text is required" });
+      }
+      if (!journal.journal_date) {
+        return res.status(400).json({ error: "Journal date is required" });
+      }
+    }
 
-    // Save each trade
-    for (const trade of trades) {
-      const result = await db.query(
-        `INSERT INTO tj.trade_orders 
-         (user_id, trade_date, symbol, trade_type, lot_size, entry_price, exit_price, profit_loss, market_type) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) 
-         RETURNING *`,
-        [
-          userId,
-          trade.trade_date || new Date().toISOString(),
-          trade.symbol,
-          trade.trade_type || "BUY",
-          trade.lot_size || 1,
-          trade.entry_price || 0,
-          trade.exit_price || null,
-          trade.profit_loss || 0,
-          trade.market_type || "FOREX",
-        ]
+    // Determine if this is a trade day or no trade day
+    const isTradeDay = journals[0].trade_type === 'TRADE';
+    const marketType = journals[0].market_type;
+
+    // Check for NT conflicts before saving
+    if (isTradeDay && trades && Array.isArray(trades) && trades.length > 0 && marketType) {
+      // Get all unique dates from trades
+      const uniqueDates = [...new Set(trades.map(t => {
+        const date = new Date(t.trade_date);
+        return date.toISOString().split('T')[0];
+      }))];
+
+      // Check if any of these dates already have NT entries for this market
+      const ntCheck = await db.query(
+        `SELECT DISTINCT TO_CHAR(trade_date, 'YYYY-MM-DD') as trade_date 
+         FROM tj.trade_orders 
+         WHERE user_id = $1 
+         AND TO_CHAR(trade_date, 'YYYY-MM-DD') = ANY($2::text[]) 
+         AND trade_type = 'NT'
+         AND market_type = $3`,
+        [userId, uniqueDates, marketType]
       );
 
-      savedTrades.push(result.rows[0]);
+      if (ntCheck.rows.length > 0) {
+        const conflictDates = ntCheck.rows.map(row => row.trade_date).join(', ');
+        return res.status(409).json({ 
+          error: `Cannot add trades. No Trade entries already exist for ${marketType} market on: ${conflictDates}`,
+          conflictDates: ntCheck.rows.map(row => row.trade_date),
+          marketType: marketType
+        });
+      }
     }
 
-    res.json({
-      success: true,
-      savedCount: savedTrades.length,
-      message: `Successfully saved ${savedTrades.length} trade(s)`,
-      trades: savedTrades,
-    });
+    // Check for duplicate NT entries (same date + same market)
+    if (!isTradeDay && marketType) {
+      const journalDates = journals.map(j => {
+        const date = new Date(j.journal_date);
+        return date.toISOString().split('T')[0];
+      });
+
+      const duplicateCheck = await db.query(
+        `SELECT DISTINCT TO_CHAR(trade_date, 'YYYY-MM-DD') as trade_date 
+         FROM tj.trade_orders 
+         WHERE user_id = $1 
+         AND TO_CHAR(trade_date, 'YYYY-MM-DD') = ANY($2::text[]) 
+         AND trade_type = 'NT'
+         AND market_type = $3`,
+        [userId, journalDates, marketType]
+      );
+
+      if (duplicateCheck.rows.length > 0) {
+        const conflictDates = duplicateCheck.rows.map(row => row.trade_date).join(', ');
+        return res.status(409).json({ 
+          error: `No Trade entry already exists for ${marketType} market on: ${conflictDates}`,
+          conflictDates: duplicateCheck.rows.map(row => row.trade_date),
+          marketType: marketType
+        });
+      }
+    }
+
+    const savedTrades = [];
+    const savedJournals = [];
+    const client = await db.connect();
+
+    try {
+      // Start transaction
+      await client.query('BEGIN');
+
+      // Save all journal entries (allow one entry per market per date)
+      for (const journal of journals) {
+        const journalResult = await client.query(
+          `INSERT INTO tj.trading_journal 
+           (user_id, journal_date, journal_text, trade_type, market_type) 
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (user_id, journal_date, market_type) 
+           DO UPDATE SET 
+             journal_text = EXCLUDED.journal_text,
+             trade_type = EXCLUDED.trade_type,
+             updated_at = CURRENT_TIMESTAMP
+           RETURNING *`,
+          [
+            userId,
+            journal.journal_date,
+            journal.journal_text.trim(),
+            journal.trade_type || 'TRADE',
+            journal.market_type || null
+          ]
+        );
+        savedJournals.push(journalResult.rows[0]);
+      }
+
+      // Determine if this is a trade day or no trade day
+      const isTradeDay = journals[0].trade_type === 'TRADE';
+
+      // If trade day, save trades
+      if (isTradeDay && trades && Array.isArray(trades) && trades.length > 0) {
+        for (const trade of trades) {
+          const result = await client.query(
+            `INSERT INTO tj.trade_orders 
+             (user_id, trade_date, symbol, trade_type, lot_size, entry_price, exit_price, profit_loss, market_type) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) 
+             RETURNING *`,
+            [
+              userId,
+              trade.trade_date,
+              trade.symbol,
+              trade.trade_type || "BUY",
+              trade.lot_size || 1,
+              trade.entry_price || 0,
+              trade.exit_price || null,
+              trade.profit_loss || 0,
+              trade.market_type || "FOREX",
+            ]
+          );
+          savedTrades.push(result.rows[0]);
+        }
+      } else if (!isTradeDay) {
+        // For No Trade days, insert NT entries in trade_orders for each date
+        for (const journal of journals) {
+          const result = await client.query(
+            `INSERT INTO tj.trade_orders 
+             (user_id, trade_date, symbol, trade_type, lot_size, entry_price, exit_price, profit_loss, market_type) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) 
+             RETURNING *`,
+            [
+              userId,
+              journal.journal_date,
+              'NT', // symbol as NT
+              'NT', // trade_type as NT
+              0,    // lot_size default
+              0,    // entry_price default
+              0,    // exit_price default
+              0,    // profit_loss default
+              journal.market_type || 'FOREX', // use journal's market_type
+            ]
+          );
+          savedTrades.push(result.rows[0]);
+        }
+      }
+
+      // Commit transaction
+      await client.query('COMMIT');
+
+      const message = !isTradeDay
+        ? `Successfully saved ${savedJournals.length} No Trade journal entry(ies)`
+        : `Successfully saved ${savedTrades.length} trade(s) and ${savedJournals.length} journal entry(ies)`;
+
+      res.json({
+        success: true,
+        savedTradesCount: savedTrades.length,
+        savedJournalsCount: savedJournals.length,
+        message: message,
+        trades: savedTrades,
+        journals: savedJournals
+      });
+
+    } catch (error) {
+      // Rollback transaction on error
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+
   } catch (error) {
     console.error("Save trades error:", error);
     res.status(500).json({
-      error: "Failed to save trades",
+      error: "Failed to save trades and journal",
+      details: error.message,
+    });
+  }
+});
+
+// Check for NT (No Trade) entries on specific dates
+app.post("/api/trades/check-nt", authenticateToken, async (req, res) => {
+  try {
+    const { dates, marketType } = req.body;
+    const userId = req.user.userId;
+
+    if (!dates || !Array.isArray(dates) || dates.length === 0) {
+      return res.status(400).json({ error: "Dates array is required" });
+    }
+
+    if (!marketType) {
+      return res.status(400).json({ error: "Market type is required" });
+    }
+
+    // Check for NT entries on the provided dates for specific market
+    // Convert dates to string format for comparison to avoid timezone issues
+    const result = await db.query(
+      `SELECT DISTINCT TO_CHAR(trade_date, 'YYYY-MM-DD') as trade_date, market_type 
+       FROM tj.trade_orders 
+       WHERE user_id = $1 
+       AND TO_CHAR(trade_date, 'YYYY-MM-DD') = ANY($2::text[]) 
+       AND trade_type = 'NT'
+       AND market_type = $3
+       ORDER BY trade_date`,
+      [userId, dates, marketType]
+    );
+
+    res.json({
+      success: true,
+      ntDates: result.rows.map(row => row.trade_date),
+      marketType: marketType,
+      conflicts: result.rows,
+      hasConflict: result.rows.length > 0
+    });
+
+  } catch (error) {
+    console.error("Check NT error:", error);
+    res.status(500).json({
+      error: "Failed to check NT entries",
+      details: error.message,
+    });
+  }
+});
+
+// Delete NT entries for a specific date and market
+app.delete("/api/trades/delete-nt/:date", authenticateToken, async (req, res) => {
+  try {
+    const { date } = req.params;
+    const { marketType } = req.query;
+    const userId = req.user.userId;
+
+    if (!marketType) {
+      return res.status(400).json({ error: "Market type is required" });
+    }
+
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SET search_path TO tj, public');
+
+      // Delete from trade_orders using string date comparison and market_type
+      const tradeResult = await client.query(
+        `DELETE FROM tj.trade_orders 
+         WHERE user_id = $1 
+         AND TO_CHAR(trade_date, 'YYYY-MM-DD') = $2 
+         AND trade_type = 'NT'
+         AND market_type = $3
+         RETURNING *`,
+        [userId, date, marketType]
+      );
+
+      // Delete from trading_journal using string date comparison and market_type
+      const journalResult = await client.query(
+        `DELETE FROM tj.trading_journal 
+         WHERE user_id = $1 
+         AND TO_CHAR(journal_date, 'YYYY-MM-DD') = $2 
+         AND trade_type = 'NT'
+         AND market_type = $3
+         RETURNING *`,
+        [userId, date, marketType]
+      );
+
+      await client.query('COMMIT');
+
+      res.json({
+        success: true,
+        message: `NT entry deleted for ${date} in ${marketType} market`,
+        deletedTrades: tradeResult.rowCount,
+        deletedJournals: journalResult.rowCount
+      });
+
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+
+  } catch (error) {
+    console.error("Delete NT error:", error);
+    res.status(500).json({
+      error: "Failed to delete NT entry",
+      details: error.message,
+    });
+  }
+});
+
+// Get user's trading journals
+app.get("/api/journals", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+
+    const client = await db.connect();
+    try {
+      await client.query('SET search_path TO tj, public');
+
+      const result = await client.query(
+        `SELECT id, TO_CHAR(journal_date, 'YYYY-MM-DD') as journal_date, journal_text, trade_type, market_type
+         FROM tj.trading_journal
+         WHERE user_id = $1
+         ORDER BY journal_date DESC`,
+        [userId]
+      );
+
+      res.json({
+        success: true,
+        journals: result.rows
+      });
+
+    } finally {
+      client.release();
+    }
+
+  } catch (error) {
+    console.error("Get journals error:", error);
+    res.status(500).json({
+      error: "Failed to fetch journals",
       details: error.message,
     });
   }
@@ -481,9 +746,6 @@ app.delete("/api/trades/:id", authenticateToken, async (req, res) => {
     );
 
     if (result.rows.length === 0) {
-      console.log(
-        `❌ Trade deletion failed - trade_id: ${tradeId}, user_id: ${userId}`
-      );
       return res.status(404).json({ error: "Trade not found" });
     }
 
@@ -539,15 +801,17 @@ app.get("/api/trades/all", authenticateToken, async (req, res) => {
       INNER JOIN tj.users u ON t.user_id = u.user_id
     `;
     const params = [];
-    if (userId) {
+    if (userId && userId.trim()) {
       // Support multiple user IDs (comma-separated)
       const ids = userId
         .split(",")
         .map((id) => id.trim())
         .filter(Boolean);
-      const placeholders = ids.map((_, i) => `$${i + 1}`).join(",");
-      query += ` WHERE t.user_id IN (${placeholders})`;
-      params.push(...ids);
+      if (ids.length > 0) {
+        const placeholders = ids.map((_, i) => `$${i + 1}`).join(",");
+        query += ` WHERE t.user_id IN (${placeholders})`;
+        params.push(...ids);
+      }
     }
     query += " ORDER BY t.trade_date DESC, t.created_at DESC";
 
@@ -562,6 +826,52 @@ app.get("/api/trades/all", authenticateToken, async (req, res) => {
     console.error("Get all trades error:", error);
     res.status(500).json({
       error: "Failed to fetch trades",
+      details: error.message,
+    });
+  }
+});
+
+// Get all journals with user details (for admin analysis)
+app.get("/api/journals/all", authenticateToken, async (req, res) => {
+  try {
+    const { userId } = req.query;
+
+    let query = `
+      SELECT 
+        j.*,
+        u.name as user_name,
+        u.email as user_email,
+        u.phone as user_phone,
+        TO_CHAR(j.journal_date, 'YYYY-MM-DD') as journal_date
+      FROM tj.trading_journal j
+      INNER JOIN tj.users u ON j.user_id = u.user_id
+    `;
+    const params = [];
+    if (userId && userId.trim()) {
+      // Support multiple user IDs (comma-separated)
+      const ids = userId
+        .split(",")
+        .map((id) => id.trim())
+        .filter(Boolean);
+      if (ids.length > 0) {
+        const placeholders = ids.map((_, i) => `$${i + 1}`).join(",");
+        query += ` WHERE j.user_id IN (${placeholders})`;
+        params.push(...ids);
+      }
+    }
+    query += " ORDER BY j.journal_date DESC, j.created_at DESC";
+
+    const result = await db.query(query, params);
+
+    res.json({
+      success: true,
+      journals: result.rows,
+      count: result.rows.length,
+    });
+  } catch (error) {
+    console.error("Get all journals error:", error);
+    res.status(500).json({
+      error: "Failed to fetch journals",
       details: error.message,
     });
   }
@@ -582,7 +892,6 @@ app.get("/api/users/:id", authenticateToken, async (req, res) => {
     );
 
     if (result.rows.length === 0) {
-      console.log(`❌ Get user failed - user not found: ${userId}`);
       return res.status(404).json({ error: "User not found" });
     }
 
@@ -625,9 +934,6 @@ app.put("/api/users/:id", authenticateToken, async (req, res) => {
         ]
       );
       if (duplicateCheck.rows.length > 0) {
-        console.log(
-          `❌ Duplicate email/phone in update - user_id: ${userId}, email: ${email}, phone: ${phone}`
-        );
         return res
           .status(400)
           .json({ error: "Email or phone already exists for another user" });
@@ -672,7 +978,6 @@ app.put("/api/users/:id/password", authenticateToken, async (req, res) => {
     const { newPassword } = req.body;
 
     if (!newPassword || newPassword.length < 6) {
-      console.log(`❌ Weak password attempt for user: ${userId}`);
       return res
         .status(400)
         .json({ error: "Password must be at least 6 characters" });
@@ -684,7 +989,6 @@ app.put("/api/users/:id/password", authenticateToken, async (req, res) => {
       [userId]
     );
     if (checkUser.rows.length === 0) {
-      console.log(`❌ Password update attempt on non-existent user: ${userId}`);
       return res.status(404).json({ error: "User not found" });
     }
 
@@ -721,13 +1025,11 @@ app.delete("/api/users/:id", authenticateToken, async (req, res) => {
       [userId]
     );
     if (checkUser.rows.length === 0) {
-      console.log(`❌ Delete attempt on non-existent user: ${userId}`);
       return res.status(404).json({ error: "User not found" });
     }
 
     // Prevent deleting yourself (optional safety check)
     if (req.user.userId === userId) {
-      console.log(`❌ Self-deletion attempt blocked - user_id: ${userId}`);
       return res
         .status(400)
         .json({ error: "You cannot delete your own account" });
@@ -778,8 +1080,10 @@ app.get("/api/maintenance/upcoming", async (req, res) => {
   try {
     const result = await db.query(
       `SELECT * FROM tj.maintenance 
-       WHERE maintenance_date >= CURRENT_DATE 
-       AND maintenance_date <= CURRENT_DATE + INTERVAL '1 day'
+       WHERE (
+         (maintenance_date = CURRENT_DATE AND from_time > CURRENT_TIME)
+         OR maintenance_date = CURRENT_DATE + INTERVAL '1 day'
+       )
        ORDER BY maintenance_date ASC, from_time ASC`
     );
 
@@ -810,9 +1114,6 @@ app.post("/api/maintenance", async (req, res) => {
     } = req.body;
 
     if (!maintenance_date || !from_time || !to_time) {
-      console.log(
-        `❌ Maintenance creation with missing fields - date: ${maintenance_date}`
-      );
       return res
         .status(400)
         .json({ error: "Date and time fields are required" });
@@ -879,9 +1180,6 @@ app.put("/api/maintenance/:id", async (req, res) => {
     );
 
     if (result.rows.length === 0) {
-      console.log(
-        `❌ Maintenance update failed - id not found: ${maintenanceId}`
-      );
       return res.status(404).json({ error: "Maintenance record not found" });
     }
 
@@ -910,9 +1208,6 @@ app.delete("/api/maintenance/:id", async (req, res) => {
     );
 
     if (result.rows.length === 0) {
-      console.log(
-        `❌ Maintenance deletion failed - id not found: ${maintenanceId}`
-      );
       return res.status(404).json({ error: "Maintenance record not found" });
     }
 
@@ -933,4 +1228,96 @@ app.delete("/api/maintenance/:id", async (req, res) => {
 // Start server
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
+});
+
+// Update trade by ID
+app.put("/api/trades/:id", authenticateToken, async (req, res) => {
+  try {
+    const tradeId = req.params.id;
+    const {
+      market_type,
+      symbol,
+      trade_type,
+      lot_size,
+      entry_price,
+      exit_price,
+      profit_loss,
+      trade_date,
+    } = req.body;
+
+    const result = await db.query(
+      `UPDATE tj.trade_orders 
+       SET market_type = $1, symbol = $2, trade_type = $3, lot_size = $4, 
+           entry_price = $5, exit_price = $6, profit_loss = $7, trade_date = $8
+       WHERE id = $9 AND user_id = $10
+       RETURNING *`,
+      [
+        market_type,
+        symbol,
+        trade_type,
+        lot_size,
+        entry_price,
+        exit_price,
+        profit_loss,
+        trade_date,
+        tradeId,
+        req.user.userId,
+      ]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Trade not found" });
+    }
+
+    res.json({
+      success: true,
+      message: "Trade updated successfully",
+      trade: result.rows[0],
+    });
+  } catch (error) {
+    console.error("Update trade error:", error);
+    res.status(500).json({
+      error: "Failed to update trade",
+      details: error.message,
+    });
+  }
+});
+
+// Update journal by ID
+app.put("/api/journals/:id", authenticateToken, async (req, res) => {
+  try {
+    const journalId = req.params.id;
+    const { journal_date, market_type, trade_type, journal_text } = req.body;
+
+    const result = await db.query(
+      `UPDATE tj.trading_journal 
+       SET journal_date = $1, market_type = $2, trade_type = $3, journal_text = $4
+       WHERE id = $5 AND user_id = $6
+       RETURNING *`,
+      [
+        journal_date,
+        market_type,
+        trade_type,
+        journal_text,
+        journalId,
+        req.user.userId,
+      ]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Journal not found" });
+    }
+
+    res.json({
+      success: true,
+      message: "Journal updated successfully",
+      journal: result.rows[0],
+    });
+  } catch (error) {
+    console.error("Update journal error:", error);
+    res.status(500).json({
+      error: "Failed to update journal",
+      details: error.message,
+    });
+  }
 });
